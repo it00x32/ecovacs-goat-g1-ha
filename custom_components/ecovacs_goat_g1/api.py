@@ -343,30 +343,59 @@ class GoatG1Api:
 
     async def fetch_zones(self) -> list[dict[str, Any]]:
         try:
-            map_r  = await self.send_cmd("getCachedMapInfo")
-            maps   = self._data(map_r).get("maps", [])
-            active = next((m for m in maps if m.get("using") == 1 and m.get("built") == 1), None)
+            map_r = await self.send_cmd("getCachedMapInfo")
+            _LOGGER.debug("getCachedMapInfo raw response: %s", map_r)
+            maps  = self._data(map_r).get("maps", [])
+            _LOGGER.debug("Maps found: %d → %s", len(maps), maps)
+
+            # Prefer the currently active map; fall back to any map
+            active = (
+                next((m for m in maps if m.get("using") == 1 and m.get("built") == 1), None)
+                or next((m for m in maps if m.get("using") == 1), None)
+                or (maps[0] if maps else None)
+            )
             if not active:
+                _LOGGER.warning("fetch_zones: no map available")
                 return []
-            mid    = active["mid"]
-            set_r  = await self.send_cmd("getMapSet", {"mid": mid, "type": "ar"})
-            subsets = self._data(set_r).get("subsets", [])
+
+            mid = active["mid"]
+            _LOGGER.debug("Using map mid=%s", mid)
+
+            # Try both area types the G1 might use
+            subsets: list[dict] = []
+            for map_type in ("ar", "vw", "sa"):
+                set_r = await self.send_cmd("getMapSet", {"mid": mid, "type": map_type})
+                _LOGGER.debug("getMapSet type=%s raw: %s", map_type, set_r)
+                subsets = self._data(set_r).get("subsets", [])
+                if subsets:
+                    _LOGGER.debug("Found %d subsets with type=%s", len(subsets), map_type)
+                    break
+
             if not subsets:
+                _LOGGER.warning("fetch_zones: no subsets found for mid=%s", mid)
                 return []
 
             async def fetch_one(sub: dict) -> dict[str, Any]:
-                try:
-                    sr   = await self.send_cmd("getMapSubSet",
-                                               {"mid": mid, "mssid": sub["mssid"], "type": "ar"})
-                    name = self._data(sr).get("name") or sub.get("name") or sub["mssid"]
+                mssid = sub.get("mssid") or sub.get("id") or str(sub)
+                # Use the name from the subset list directly when available
+                name = sub.get("name") or ""
+                if not name:
                     try:
-                        fixed = bytes(name, "latin-1").decode("utf-8")
-                        name  = fixed if "\ufffd" not in fixed else name
-                    except Exception:
-                        pass
-                    return {"id": sub["mssid"], "name": name}
+                        sr   = await self.send_cmd("getMapSubSet",
+                                                   {"mid": mid, "mssid": mssid, "type": "ar"})
+                        _LOGGER.debug("getMapSubSet mssid=%s raw: %s", mssid, sr)
+                        name = self._data(sr).get("name") or mssid
+                    except Exception as e:
+                        _LOGGER.debug("getMapSubSet failed for %s: %s", mssid, e)
+                        name = mssid
+                # Fix latin-1 → utf-8 mis-encoding
+                try:
+                    fixed = bytes(name, "latin-1").decode("utf-8")
+                    name  = fixed if "\ufffd" not in fixed else name
                 except Exception:
-                    return {"id": sub["mssid"], "name": sub["mssid"]}
+                    pass
+                _LOGGER.debug("Zone: id=%s name=%s", mssid, name)
+                return {"id": mssid, "name": name}
 
             return list(await asyncio.gather(*[fetch_one(s) for s in subsets]))
         except Exception as exc:
