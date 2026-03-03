@@ -345,7 +345,8 @@ class GoatG1Api:
         try:
             map_r = await self.send_cmd("getCachedMapInfo")
             _LOGGER.debug("getCachedMapInfo raw response: %s", map_r)
-            maps  = self._data(map_r).get("maps", [])
+            d     = self._data(map_r)
+            maps  = d.get("info") or d.get("maps") or []
             _LOGGER.debug("Maps found: %d → %s", len(maps), maps)
 
             # Prefer the currently active map; fall back to any map
