@@ -1,7 +1,7 @@
 {
   "domain": "ecovacs_goat_g1",
   "name": "Ecovacs Goat G1",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "documentation": "https://github.com/it00x32/ecovacs-goat-g1-ha",
   "issue_tracker": "https://github.com/it00x32/ecovacs-goat-g1-ha/issues",
   "codeowners": ["@it00x32"],
