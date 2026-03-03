@@ -1,0 +1,27 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Ecovacs Goat G1 – Anmeldung",
+        "description": "Bitte gib deine Ecovacs-Konto-Daten ein.",
+        "data": {
+          "email":    "E-Mail-Adresse",
+          "password": "Passwort",
+          "country":  "Land"
+        }
+      },
+      "select_device": {
+        "title": "Gerät auswählen",
+        "data": { "device": "Gerät" }
+      }
+    },
+    "error": {
+      "invalid_auth":   "Ungültige Anmeldedaten.",
+      "cannot_connect": "Verbindung fehlgeschlagen.",
+      "no_devices":     "Kein Gerät im Konto gefunden."
+    },
+    "abort": {
+      "already_configured": "Bereits eingerichtet."
+    }
+  }
+}

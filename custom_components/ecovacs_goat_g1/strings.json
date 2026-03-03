@@ -1,0 +1,56 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Ecovacs Goat G1 – Anmeldung",
+        "description": "Bitte gib deine Ecovacs-Konto-Daten ein.",
+        "data": {
+          "email":    "E-Mail-Adresse",
+          "password": "Passwort",
+          "country":  "Land"
+        }
+      },
+      "select_device": {
+        "title": "Gerät auswählen",
+        "description": "Wähle den Mähroboter aus deinem Konto.",
+        "data": {
+          "device": "Gerät"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth":   "Ungültige Anmeldedaten.",
+      "cannot_connect": "Verbindung fehlgeschlagen. Prüfe deine Internetverbindung.",
+      "no_devices":     "Kein Gerät im Konto gefunden."
+    },
+    "abort": {
+      "already_configured": "Dieses Gerät ist bereits eingerichtet."
+    }
+  },
+  "services": {
+    "start_border_mowing": {
+      "name": "Rand mähen",
+      "description": "Startet den Mähvorgang entlang des Randes."
+    },
+    "start_zone": {
+      "name": "Zone mähen",
+      "description": "Startet den Mähvorgang in einer bestimmten Zone.",
+      "fields": {
+        "zone_id": {
+          "name": "Zonen-ID",
+          "description": "ID der zu mähenden Zone."
+        }
+      }
+    },
+    "set_mowing_direction": {
+      "name": "Mährichtung setzen",
+      "description": "Setzt den Mähwinkel (0–180°).",
+      "fields": {
+        "angle": {
+          "name": "Winkel",
+          "description": "Mähwinkel in Grad (0–180)."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Ecovacs Goat G1 – Sign In",
+        "description": "Enter your Ecovacs account credentials.",
+        "data": {
+          "email":    "E-Mail Address",
+          "password": "Password",
+          "country":  "Country"
+        }
+      },
+      "select_device": {
+        "title": "Select Device",
+        "data": { "device": "Device" }
+      }
+    },
+    "error": {
+      "invalid_auth":   "Invalid credentials.",
+      "cannot_connect": "Connection failed. Check your internet connection.",
+      "no_devices":     "No device found in account."
+    },
+    "abort": {
+      "already_configured": "Device is already configured."
+    }
+  }
+}
