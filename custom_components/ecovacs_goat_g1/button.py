@@ -20,6 +20,8 @@ async def async_setup_entry(
     async_add_entities([
         GoatG1SoundButton(coordinator),
         GoatG1BorderMowButton(coordinator),
+        GoatG1ZoneStartButton(coordinator),
+        GoatG1ZoneSyncButton(coordinator),
     ])
 
 
@@ -43,4 +45,37 @@ class GoatG1BorderMowButton(GoatG1Entity, ButtonEntity):
 
     async def async_press(self) -> None:
         await self.coordinator.api.start_border_mowing()
+        await self.coordinator.async_request_refresh()
+
+
+class GoatG1ZoneStartButton(GoatG1Entity, ButtonEntity):
+    _attr_name = "Zone starten"
+    _attr_icon = "mdi:map-marker-check"
+
+    def __init__(self, coordinator: GoatG1Coordinator) -> None:
+        super().__init__(coordinator, "button_zone_start")
+
+    @property
+    def available(self) -> bool:
+        return super().available and bool(self.coordinator.selected_zone_id)
+
+    async def async_press(self) -> None:
+        zone_id = self.coordinator.selected_zone_id
+        if zone_id:
+            await self.coordinator.api.start_zone(zone_id)
+            await self.coordinator.async_request_refresh()
+
+
+class GoatG1ZoneSyncButton(GoatG1Entity, ButtonEntity):
+    _attr_name = "Zonen aktualisieren"
+    _attr_icon = "mdi:sync"
+
+    def __init__(self, coordinator: GoatG1Coordinator) -> None:
+        super().__init__(coordinator, "button_zone_sync")
+
+    async def async_press(self) -> None:
+        zones = await self.coordinator.api.fetch_zones()
+        self.coordinator.zones = zones
+        if zones and self.coordinator.selected_zone_id not in {z["id"] for z in zones}:
+            self.coordinator.selected_zone_id = zones[0]["id"]
         await self.coordinator.async_request_refresh()

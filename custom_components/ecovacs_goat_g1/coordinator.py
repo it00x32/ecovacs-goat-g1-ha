@@ -33,6 +33,7 @@ class GoatG1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.errors:   list[int]            = []
         self.fw_version: str | None         = None
         self.direction: int                 = 0
+        self.selected_zone_id: str | None   = None
 
     async def _async_update_data(self) -> dict[str, Any]:
         try:
@@ -61,5 +62,8 @@ class GoatG1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not isinstance(results[4], Exception): self.stats      = results[4]
         if not isinstance(results[5], Exception): self.errors     = results[5]
         if not isinstance(results[6], Exception): self.direction  = results[6]
-        if not isinstance(results[7], Exception): self.zones      = results[7]
+        if not isinstance(results[7], Exception):
+            self.zones = results[7]
+            if self.zones and self.selected_zone_id is None:
+                self.selected_zone_id = self.zones[0]["id"]
         _LOGGER.debug("Static data loaded: fw=%s zones=%d", self.fw_version, len(self.zones))
