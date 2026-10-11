@@ -2,26 +2,44 @@
   "config": {
     "step": {
       "user": {
-        "title": "Ecovacs Goat G1 – Sign In",
+        "title": "Ecovacs Goat G1 – Sign in",
         "description": "Enter your Ecovacs account credentials.",
         "data": {
-          "email":    "E-Mail Address",
+          "email": "Email",
           "password": "Password",
-          "country":  "Country"
+          "country": "Country"
+        }
+      },
+      "verify_device": {
+        "title": "Device verification",
+        "description": "Ecovacs sent a verification code to {email}. Enter the code (one-time use).",
+        "data": {
+          "verification_code": "Verification code"
         }
       },
       "select_device": {
-        "title": "Select Device",
+        "title": "Select device",
         "data": { "device": "Device" }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate",
+        "description": "Login for {email} expired or needs device verification. Optionally enter a new password.",
+        "data": {
+          "password": "Password (optional)"
+        }
       }
     },
     "error": {
-      "invalid_auth":   "Invalid credentials.",
-      "cannot_connect": "Connection failed. Check your internet connection.",
-      "no_devices":     "No device found in account."
+      "invalid_auth": "Invalid credentials.",
+      "invalid_code": "Invalid or expired verification code.",
+      "cannot_connect": "Connection failed.",
+      "no_devices": "No device found on this account."
     },
     "abort": {
-      "already_configured": "Device is already configured."
+      "already_configured": "Already configured.",
+      "no_devices": "No device found on this account.",
+      "cannot_connect": "Connection failed.",
+      "reauth_successful": "Re-authenticated successfully."
     }
   }
 }

@@ -1,14 +1,20 @@
 """Button entities for Ecovacs Goat G1."""
 from __future__ import annotations
 
+import logging
+
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from .api import GoatG1Error
 from .const import DOMAIN
 from .coordinator import GoatG1Coordinator
 from .entity import GoatG1Entity
+
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -44,8 +50,12 @@ class GoatG1BorderMowButton(GoatG1Entity, ButtonEntity):
         super().__init__(coordinator, "button_border_mow")
 
     async def async_press(self) -> None:
-        await self.coordinator.api.start_border_mowing()
-        await self.coordinator.async_request_refresh()
+        try:
+            await self.coordinator.api.start_border_mowing()
+            await self.coordinator.async_request_refresh()
+        except GoatG1Error as err:
+            _LOGGER.error("Rand mähen fehlgeschlagen: %s", err)
+            raise HomeAssistantError(str(err)) from err
 
 
 class GoatG1ZoneStartButton(GoatG1Entity, ButtonEntity):

@@ -1,7 +1,8 @@
-"""Ecovacs Goat G1 – direct cloud API client (no MQTT, no external deps)."""
+"""Ecovacs Goat G1 – direct cloud API client (no MQTT)."""
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import logging
 import time
@@ -9,6 +10,8 @@ from typing import Any
 from urllib.parse import urlencode
 
 from aiohttp import ClientSession
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -17,10 +20,19 @@ CLIENT_SECRET      = "6c319b2a5cd3e66e39159c2e28f2fce9"
 AUTH_CLIENT_KEY    = "1520391491841"
 AUTH_CLIENT_SECRET = "77ef58ce3afbe337da74aa8c5ab963a9"
 REALM              = "ecouser.net"
-USER_AGENT         = "Dalvik/2.1.0 (Linux; U; Android 5.1.1; A5010 Build/LMY48Z)"
-DEVICE_ID          = hashlib.md5(b"ecovacs-ha-goat-g1").hexdigest()
-META               = {"lang": "EN", "appCode": "global_e", "appVersion": "1.6.3",
-                      "channel": "google_play", "deviceType": "1"}
+USER_AGENT         = "Dalvik/2.1.0 (Linux; U; Android 14; Pixel 7 Build/UP1A.231105.001)"
+PUBLIC_KEY_CONFIG  = "PUBLIC.KEY.CONFIG"
+ANDROID_MODEL      = "Pixel 7"
+ANDROID_SYSTEM     = "Android 14"
+
+# Ecovacs rejects the old 1.6.3 password login with code 1013; current app uses 3.14.0
+META = {
+    "lang": "EN",
+    "appCode": "global_e",
+    "appVersion": "3.14.0",
+    "channel": "google_play",
+    "deviceType": "1",
+}
 
 EU = {"AD","AL","AT","AX","BA","BE","BG","BY","CH","CY","CZ","DE","DK","EE","ES","FI",
       "FO","FR","GB","GG","GI","GR","HR","HU","IE","IM","IS","IT","JE","LI","LT","LU",
@@ -38,12 +50,26 @@ NA = {"AG","AI","AW","BB","BL","BM","BQ","BS","BZ","CA","CR","CU","CW","DM","DO"
 class GoatG1Error(Exception):
     """Generic API error."""
 
+
 class AuthError(GoatG1Error):
     """Authentication failed."""
 
 
+class DeviceVerificationRequiredError(AuthError):
+    """Ecovacs requires email device verification (API code 1013)."""
+
+
+class InvalidVerificationCodeError(AuthError):
+    """Email verification code rejected (API code 1012)."""
+
+
 def _md5(s: str) -> str:
     return hashlib.md5(s.encode()).hexdigest()
+
+
+def generate_device_id() -> str:
+    """Stable-looking client device id (must stay constant after email verification)."""
+    return _md5(f"ecovacs-ha-goat-g1-{time.time_ns()}")
 
 
 def _get_urls(country: str) -> dict[str, str]:
@@ -54,10 +80,11 @@ def _get_urls(country: str) -> dict[str, str]:
     elif country in ASC:  portal = "https://portal-as.ecouser.net"
     elif country in NA:   portal = "https://portal-na.ecouser.net"
     else:                 portal = "https://portal-ww.ecouser.net"
+    tld = "cn" if country == "CN" else "com"
     return {
-        "portal": portal,
-        "login":    f"https://gl-{c}-api.ecovacs.com",
-        "authcode": f"https://gl-{c}-openapi.ecovacs.com",
+        "portal":   portal,
+        "login":    f"https://gl-{c}-api.ecovacs.{tld}",
+        "authcode": f"https://gl-{c}-openapi.ecovacs.{tld}",
         "eco":      eco,
     }
 
@@ -73,13 +100,18 @@ def _sign(params: dict, extra: dict, key: str, secret: str) -> dict:
 class GoatG1Api:
     """Async API client for Ecovacs Goat G1."""
 
-    def __init__(self, session: ClientSession) -> None:
-        self._s       = session
-        self.country  = ""
-        self.user_id  = ""
-        self.token    = ""
+    def __init__(self, session: ClientSession, device_id: str | None = None) -> None:
+        self._s         = session
+        self.device_id  = device_id or generate_device_id()
+        self.country    = ""
+        self.user_id    = ""
+        self.token      = ""
+        self.expires_at = 0
         self.device: dict[str, Any] | None = None
         self.devices: list[dict[str, Any]] = []
+        self._public_key: rsa.RSAPublicKey | None = None
+        self._email: str = ""
+        self._password_hash: str = ""
 
     # ── Internal HTTP helpers ─────────────────────────────────────────────────
 
@@ -94,12 +126,57 @@ class GoatG1Api:
         ) as r:
             return await r.json(content_type=None)
 
+    def _meta(self, country: str) -> dict[str, str]:
+        eco = "UK" if country == "GB" else country
+        return {**META, "country": eco.lower(), "deviceId": self.device_id}
+
+    def _private_path(self, country: str, endpoint: str) -> str:
+        m = self._meta(country)
+        return (
+            f"/v1/private/{m['country']}/{m['lang']}/{m['deviceId']}/"
+            f"{m['appCode']}/{m['appVersion']}/{m['channel']}/{m['deviceType']}/{endpoint}"
+        )
+
+    async def _private_api(self, country: str, endpoint: str, params: dict[str, Any]) -> Any:
+        urls = _get_urls(country)
+        meta = self._meta(country)
+        now  = time.time()
+        body = {
+            **params,
+            "requestId": _md5(str(now)),
+            "authTimespan": str(int(now * 1000)),
+            "authTimeZone": "GMT-8",
+        }
+        signed = _sign(body, meta, CLIENT_KEY, CLIENT_SECRET)
+        url = f"{urls['login']}{self._private_path(country, endpoint)}?{urlencode(signed)}"
+        return await self._get(url)
+
+    def _raise_auth(self, j: dict, context: str) -> None:
+        code = j.get("code")
+        msg  = j.get("msg", "")
+        if code == "0000":
+            return
+        if code in ("1005", "1010"):
+            raise AuthError(f"{context}: {msg or j}")
+        if code == "1012":
+            raise InvalidVerificationCodeError(msg or "Incorrect verification code")
+        if code == "1013":
+            raise DeviceVerificationRequiredError(
+                msg or "Please update to the latest version / device verification required"
+            )
+        raise AuthError(f"{context}: code={code} {msg or j}")
+
     async def _api(self, path: str, body: dict, query: dict | None = None) -> Any:
         urls  = _get_urls(self.country)
         fbody = {
             **body,
-            "auth": {"with": "users", "userid": self.user_id, "realm": REALM,
-                     "token": self.token, "resource": DEVICE_ID},
+            "auth": {
+                "with": "users",
+                "userid": self.user_id,
+                "realm": REALM,
+                "token": self.token,
+                "resource": self.device_id,
+            },
         }
         url = f"{urls['portal']}/api/{path}"
         if query:
@@ -108,38 +185,83 @@ class GoatG1Api:
 
     # ── Authentication ────────────────────────────────────────────────────────
 
-    async def login(self, email: str, password_hash: str, country: str) -> None:
-        """3-step Ecovacs cloud authentication."""
+    def apply_credentials(self, user_id: str, token: str, country: str,
+                          expires_at: int = 0) -> None:
+        """Reuse previously stored portal credentials (skip password login)."""
+        self.user_id    = user_id
+        self.token      = token
+        self.country    = country
+        self.expires_at = expires_at
+
+    def credentials_data(self) -> dict[str, Any]:
+        """Serializable auth fields for ConfigEntry storage."""
+        return {
+            "device_id":  self.device_id,
+            "user_id":    self.user_id,
+            "token":      self.token,
+            "expires_at": self.expires_at,
+        }
+
+    def token_valid(self) -> bool:
+        return bool(self.token and self.user_id and self.expires_at > time.time() + 60)
+
+    async def _get_public_key(self, country: str) -> rsa.RSAPublicKey:
+        if self._public_key is not None:
+            return self._public_key
+        j = await self._private_api(country, "common/getConfig", {"keys": PUBLIC_KEY_CONFIG})
+        self._raise_auth(j, "getConfig")
+        entries = j.get("data")
+        if not isinstance(entries, list):
+            raise AuthError("Invalid public key configuration response")
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("key") == PUBLIC_KEY_CONFIG:
+                value = entry.get("value")
+                if isinstance(value, str):
+                    self._public_key = self._load_public_key(value)
+                    return self._public_key
+        raise AuthError("Ecovacs public key configuration is missing")
+
+    @staticmethod
+    def _load_public_key(config_value: str) -> rsa.RSAPublicKey:
+        import json
+        try:
+            encoded = json.loads(config_value)["publicKey"]
+            key = serialization.load_der_public_key(base64.b64decode(encoded, validate=True))
+        except Exception as ex:
+            raise AuthError("Invalid Ecovacs public key") from ex
+        if not isinstance(key, rsa.RSAPublicKey):
+            raise AuthError("Ecovacs public key is not an RSA key")
+        return key
+
+    async def _encrypt_account(self, country: str, account: str) -> str:
+        public_key = await self._get_public_key(country)
+        encrypted  = public_key.encrypt(account.encode(), padding.PKCS1v15())
+        return base64.b64encode(encrypted).decode()
+
+    async def _complete_login(self, country: str, uid: str, access_token: str) -> None:
         urls = _get_urls(country)
         eco  = urls["eco"]
-        meta = {**META, "country": eco.lower(), "deviceId": DEVICE_ID}
-
-        p1 = _sign(
-            {"account": email, "password": password_hash,
-             "requestId": _md5(str(time.time())),
-             "authTimespan": str(int(time.time() * 1000)),
-             "authTimeZone": "GMT-8"},
-            meta, CLIENT_KEY, CLIENT_SECRET,
-        )
-        path = f"/v1/private/{eco.lower()}/EN/{DEVICE_ID}/global_e/1.6.3/google_play/1/user/login"
-        j1 = await self._get(f"{urls['login']}{path}?{urlencode(p1)}")
-        if j1.get("code") != "0000":
-            raise AuthError(f"Login failed: {j1.get('msg', j1)}")
-        uid, access_token = j1["data"]["uid"], j1["data"]["accessToken"]
 
         p2 = _sign(
             {"uid": uid, "accessToken": access_token, "bizType": "ECOVACS_IOT",
-             "deviceId": DEVICE_ID, "authTimespan": str(int(time.time() * 1000))},
+             "deviceId": self.device_id, "authTimespan": str(int(time.time() * 1000))},
             {"openId": "global"}, AUTH_CLIENT_KEY, AUTH_CLIENT_SECRET,
         )
         j2 = await self._get(f"{urls['authcode']}/v1/global/auth/getAuthCode?{urlencode(p2)}")
-        if j2.get("code") != "0000":
-            raise AuthError(f"AuthCode failed: {j2.get('msg', j2)}")
+        self._raise_auth(j2, "AuthCode")
         auth_code = j2["data"]["authCode"]
 
-        token_body = {"edition": "ECOGLOBLE", "userId": uid, "token": auth_code,
-                      "realm": REALM, "resource": DEVICE_ID, "org": "ECOWW",
-                      "last": "", "country": eco, "todo": "loginByItToken"}
+        token_body = {
+            "edition": "ECOGLOBLE",
+            "userId": uid,
+            "token": auth_code,
+            "realm": REALM,
+            "resource": self.device_id,
+            "org": "ECOCN" if country == "CN" else "ECOWW",
+            "last": "",
+            "country": "Chinese" if country == "CN" else eco,
+            "todo": "loginByItToken",
+        }
         j3: dict | None = None
         for _ in range(3):
             j3 = await self._post(f"{urls['portal']}/api/users/user.do", token_body)
@@ -150,9 +272,77 @@ class GoatG1Api:
         if not j3 or j3.get("result") != "ok":
             raise AuthError(f"Token login failed: {j3}")
 
-        self.country = country
-        self.user_id = j3["userId"]
-        self.token   = j3["token"]
+        self.country    = country
+        self.user_id    = j3["userId"]
+        self.token      = j3["token"]
+        # last = validity in ms (usually 7 days); store ~99%
+        validity_ms = int(j3.get("last") or 604800000)
+        self.expires_at = int(time.time() + validity_ms / 1000 * 0.99)
+
+    async def login(self, email: str, password_hash: str, country: str) -> None:
+        """Password login. May raise DeviceVerificationRequiredError (code 1013)."""
+        self._email = email
+        self._password_hash = password_hash
+        endpoint = "user/loginCheckMobile" if country == "CN" else "user/login"
+        j1 = await self._private_api(
+            country, endpoint, {"account": email, "password": password_hash},
+        )
+        self._raise_auth(j1, "Login")
+        data = j1.get("data") or {}
+        await self._complete_login(country, str(data["uid"]), str(data["accessToken"]))
+
+    async def request_device_verification_code(self, email: str, country: str) -> None:
+        """Send one-time email code to verify this client device_id."""
+        self._email = email
+        encrypted = await self._encrypt_account(country, email)
+        j = await self._private_api(
+            country,
+            "user/sendEmailVerifyCode",
+            {
+                "encryptEmail": encrypted,
+                "verifyType": "EMAIL_VERIFY_DEVICE",
+                "supportChar": "N",
+                "isForce": "N",
+            },
+        )
+        self._raise_auth(j, "sendEmailVerifyCode")
+
+    async def verify_device(
+        self, email: str, country: str, verification_code: str
+    ) -> None:
+        """Complete device verification with email code, then finish portal login."""
+        self._email = email
+        encrypted = await self._encrypt_account(country, email)
+        j = await self._private_api(
+            country,
+            "user/verifyDevice",
+            {
+                "encryptAccount": encrypted,
+                "backUpEmail": "",
+                "verifyCode": verification_code.strip(),
+                "model": ANDROID_MODEL,
+                "system": ANDROID_SYSTEM,
+            },
+        )
+        self._raise_auth(j, "verifyDevice")
+        data = j.get("data") or {}
+        await self._complete_login(country, str(data["uid"]), str(data["accessToken"]))
+
+    async def ensure_login(
+        self,
+        email: str,
+        password_hash: str,
+        country: str,
+        *,
+        user_id: str = "",
+        token: str = "",
+        expires_at: int = 0,
+    ) -> None:
+        """Prefer cached token; otherwise password login (may need device verification)."""
+        if user_id and token and expires_at > time.time() + 60:
+            self.apply_credentials(user_id, token, country, expires_at)
+            return
+        await self.login(email, password_hash, country)
 
     async def fetch_devices(self) -> list[dict[str, Any]]:
         r1, r2 = await asyncio.gather(
@@ -319,8 +509,10 @@ class GoatG1Api:
 
     async def start_border_mowing(self) -> None:
         r = await self.send_cmd("clean_V2", {"act": "start", "content": {"type": "border"}})
+        _LOGGER.warning("start_border_mowing response: %s", r)
         if not self._ok(r):
-            raise GoatG1Error(f"start_border failed: {r}")
+            ret = r.get("ret") if isinstance(r, dict) else "?"
+            raise GoatG1Error(f"start_border failed (ret={ret}): {r}")
 
     async def start_zone(self, zone_id: str) -> None:
         r = await self.send_cmd(
@@ -349,7 +541,6 @@ class GoatG1Api:
             maps  = d.get("info") or d.get("maps") or []
             _LOGGER.debug("Maps found: %d → %s", len(maps), maps)
 
-            # Prefer the currently active map; fall back to any map
             active = (
                 next((m for m in maps if m.get("using") == 1 and m.get("built") == 1), None)
                 or next((m for m in maps if m.get("using") == 1), None)
@@ -362,7 +553,6 @@ class GoatG1Api:
             mid = active["mid"]
             _LOGGER.debug("Using map mid=%s", mid)
 
-            # Try both area types the G1 might use
             subsets: list[dict] = []
             for map_type in ("ar", "vw", "sa"):
                 set_r = await self.send_cmd("getMapSet", {"mid": mid, "type": map_type})
@@ -378,7 +568,6 @@ class GoatG1Api:
 
             async def fetch_one(sub: dict) -> dict[str, Any]:
                 mssid = sub.get("mssid") or sub.get("id") or str(sub)
-                # Use the name from the subset list directly when available
                 name = sub.get("name") or ""
                 if not name:
                     try:
@@ -389,7 +578,6 @@ class GoatG1Api:
                     except Exception as e:
                         _LOGGER.debug("getMapSubSet failed for %s: %s", mssid, e)
                         name = mssid
-                # Fix latin-1 → utf-8 mis-encoding
                 try:
                     fixed = bytes(name, "latin-1").decode("utf-8")
                     name  = fixed if "\ufffd" not in fixed else name

@@ -4,6 +4,10 @@ DOMAIN = "ecovacs_goat_g1"
 CONF_PASSWORD_HASH = "password_hash"
 CONF_COUNTRY = "country"
 CONF_DEVICE_INDEX = "device_index"
+CONF_DEVICE_ID = "device_id"
+CONF_USER_ID = "user_id"
+CONF_TOKEN = "token"
+CONF_EXPIRES_AT = "expires_at"
 
 SCAN_INTERVAL = 30  # seconds
 

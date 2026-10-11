@@ -5,23 +5,41 @@
         "title": "Ecovacs Goat G1 – Anmeldung",
         "description": "Bitte gib deine Ecovacs-Konto-Daten ein.",
         "data": {
-          "email":    "E-Mail-Adresse",
+          "email": "E-Mail-Adresse",
           "password": "Passwort",
-          "country":  "Land"
+          "country": "Land"
+        }
+      },
+      "verify_device": {
+        "title": "Geräteverifizierung",
+        "description": "Ecovacs hat einen Bestätigungscode an {email} gesendet. Bitte den Code eingeben (nur einmal gültig).",
+        "data": {
+          "verification_code": "Bestätigungscode"
         }
       },
       "select_device": {
         "title": "Gerät auswählen",
         "data": { "device": "Gerät" }
+      },
+      "reauth_confirm": {
+        "title": "Erneut anmelden",
+        "description": "Die Anmeldung für {email} ist abgelaufen oder erfordert eine Geräteverifizierung. Optional neues Passwort eingeben.",
+        "data": {
+          "password": "Passwort (optional)"
+        }
       }
     },
     "error": {
-      "invalid_auth":   "Ungültige Anmeldedaten.",
+      "invalid_auth": "Ungültige Anmeldedaten.",
+      "invalid_code": "Ungültiger oder abgelaufener Bestätigungscode.",
       "cannot_connect": "Verbindung fehlgeschlagen.",
-      "no_devices":     "Kein Gerät im Konto gefunden."
+      "no_devices": "Kein Gerät im Konto gefunden."
     },
     "abort": {
-      "already_configured": "Bereits eingerichtet."
+      "already_configured": "Bereits eingerichtet.",
+      "no_devices": "Kein Gerät im Konto gefunden.",
+      "cannot_connect": "Verbindung fehlgeschlagen.",
+      "reauth_successful": "Erneut angemeldet."
     }
   }
 }

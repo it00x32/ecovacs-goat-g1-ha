@@ -1,7 +1,7 @@
 # Ecovacs Goat G1 – Home Assistant Integration
 
 Custom integration for the **Ecovacs Goat G1** robotic lawn mower.
-Direkte Cloud-API-Anbindung, kein MQTT, keine zusätzlichen Abhängigkeiten.
+Direkte Cloud-API-Anbindung, kein MQTT.
 
 ## Features
 
@@ -61,18 +61,21 @@ Direkte Cloud-API-Anbindung, kein MQTT, keine zusätzlichen Abhängigkeiten.
 1. **Einstellungen** → **Geräte & Dienste** → **Integration hinzufügen**
 2. Nach **Ecovacs Goat G1** suchen
 3. E-Mail, Passwort und Land eingeben
-4. Gerät auswählen (falls mehrere vorhanden)
+4. Falls Ecovacs eine **Geräteverifizierung** verlangt: Bestätigungscode aus der E-Mail eingeben (einmalig, gebunden an die gespeicherte Client-`device_id`)
+5. Gerät auswählen (falls mehrere vorhanden)
+
+> **Hinweis (API-Änderung 2026):** Der alte Passwort-Login (`appVersion` 1.6.3) liefert oft Fehler **1013**. Die Integration nutzt App-Version **3.14.0** und den neuen Flow `sendEmailVerifyCode` → `verifyDevice` → `getAuthCode` → `loginByItToken`. Token und `device_id` werden in der Config Entry gespeichert.
 
 ## Voraussetzungen
 
 - Home Assistant 2024.1 oder neuer
 - Ecovacs-Konto mit Goat G1
-- `aiohttp` (bereits in HA enthalten)
+- `aiohttp` und `cryptography` (werden über die Integration nachgezogen / sind in HA üblich)
 
 ## Technische Details
 
 Die Integration nutzt die direkte Ecovacs Cloud-REST-API (kein MQTT).
-Status-Polling alle 30 Sekunden.
+Status-Polling alle 30 Sekunden. Authentifizierung bevorzugt gespeicherte Tokens; bei Ablauf bzw. 1013 startet ein Reauth-Flow.
 
 **Hinweis:** Der Rand-Mähmodus (`type: border`) ist nicht offiziell dokumentiert und basiert auf Reverse Engineering. Falls dieser nicht funktioniert, bitte ein [Issue](https://github.com/it00x32/ecovacs-goat-g1-ha/issues) erstellen.
 

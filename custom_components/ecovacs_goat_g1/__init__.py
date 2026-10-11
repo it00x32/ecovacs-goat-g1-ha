@@ -6,10 +6,25 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import GoatG1Api
-from .const import DOMAIN, CONF_PASSWORD_HASH, CONF_COUNTRY, CONF_DEVICE_INDEX
+from .api import (
+    AuthError,
+    DeviceVerificationRequiredError,
+    GoatG1Api,
+    generate_device_id,
+)
+from .const import (
+    CONF_COUNTRY,
+    CONF_DEVICE_ID,
+    CONF_DEVICE_INDEX,
+    CONF_EXPIRES_AT,
+    CONF_PASSWORD_HASH,
+    CONF_TOKEN,
+    CONF_USER_ID,
+    DOMAIN,
+)
 from .coordinator import GoatG1Coordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -24,15 +39,52 @@ PLATFORMS = [
 ]
 
 
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate old config entries to store device_id / tokens."""
+    if entry.version < 2:
+        data = {**entry.data}
+        if CONF_DEVICE_ID not in data:
+            # Keep a deterministic id for existing installs so a one-time
+            # email verification can stick across restarts.
+            data[CONF_DEVICE_ID] = generate_device_id()
+        hass.config_entries.async_update_entry(entry, data=data, version=2)
+        _LOGGER.info("Migrated Ecovacs Goat G1 config entry to version 2")
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     session = async_get_clientsession(hass)
-    api     = GoatG1Api(session)
+    device_id = entry.data.get(CONF_DEVICE_ID) or generate_device_id()
+    api = GoatG1Api(session, device_id=device_id)
 
-    await api.login(
-        entry.data["email"],
-        entry.data[CONF_PASSWORD_HASH],
-        entry.data[CONF_COUNTRY],
-    )
+    try:
+        await api.ensure_login(
+            entry.data["email"],
+            entry.data[CONF_PASSWORD_HASH],
+            entry.data[CONF_COUNTRY],
+            user_id=entry.data.get(CONF_USER_ID, ""),
+            token=entry.data.get(CONF_TOKEN, ""),
+            expires_at=int(entry.data.get(CONF_EXPIRES_AT) or 0),
+        )
+    except DeviceVerificationRequiredError as err:
+        raise ConfigEntryAuthFailed(
+            "Ecovacs erfordert eine Geräteverifizierung per E-Mail-Code. "
+            "Bitte die Integration erneut authentifizieren."
+        ) from err
+    except AuthError as err:
+        raise ConfigEntryAuthFailed(str(err)) from err
+
+    # Persist refreshed credentials / device_id without wiping other fields
+    new_data = {
+        **entry.data,
+        CONF_DEVICE_ID: api.device_id,
+        CONF_USER_ID: api.user_id,
+        CONF_TOKEN: api.token,
+        CONF_EXPIRES_AT: api.expires_at,
+    }
+    if new_data != dict(entry.data):
+        hass.config_entries.async_update_entry(entry, data=new_data)
+
     await api.fetch_devices()
 
     idx = entry.data.get(CONF_DEVICE_INDEX, 0)
