@@ -6,6 +6,7 @@ import base64
 import hashlib
 import logging
 import time
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlencode
 
@@ -112,6 +113,11 @@ class GoatG1Api:
         self._public_key: rsa.RSAPublicKey | None = None
         self._email: str = ""
         self._password_hash: str = ""
+        self._account_uid: str = ""
+        self._access_token: str = ""
+        self._auth_lock = asyncio.Lock()
+        self._auth_blocked_until = 0.0
+        self._on_credentials: Callable[[dict[str, Any]], None] | None = None
 
     # ── Internal HTTP helpers ─────────────────────────────────────────────────
 
@@ -193,13 +199,19 @@ class GoatG1Api:
         self.country    = country
         self.expires_at = expires_at
 
+    def set_on_credentials(self, callback: Callable[[dict[str, Any]], None]) -> None:
+        """Called after a portal token is minted so the config entry can be updated."""
+        self._on_credentials = callback
+
     def credentials_data(self) -> dict[str, Any]:
         """Serializable auth fields for ConfigEntry storage."""
         return {
-            "device_id":  self.device_id,
-            "user_id":    self.user_id,
-            "token":      self.token,
-            "expires_at": self.expires_at,
+            "device_id":     self.device_id,
+            "user_id":       self.user_id,
+            "token":         self.token,
+            "expires_at":    self.expires_at,
+            "account_uid":   self._account_uid,
+            "access_token":  self._access_token,
         }
 
     def token_valid(self) -> bool:
@@ -272,12 +284,15 @@ class GoatG1Api:
         if not j3 or j3.get("result") != "ok":
             raise AuthError(f"Token login failed: {j3}")
 
-        self.country    = country
-        self.user_id    = j3["userId"]
-        self.token      = j3["token"]
+        self.country       = country
+        self._account_uid  = uid
+        self._access_token = access_token
+        self.user_id       = j3["userId"]
+        self.token         = j3["token"]
         # last = validity in ms (usually 7 days); store ~99%
         validity_ms = int(j3.get("last") or 604800000)
         self.expires_at = int(time.time() + validity_ms / 1000 * 0.99)
+        self._auth_blocked_until = 0.0
 
     async def login(self, email: str, password_hash: str, country: str) -> None:
         """Password login. May raise DeviceVerificationRequiredError (code 1013)."""
@@ -337,28 +352,89 @@ class GoatG1Api:
         user_id: str = "",
         token: str = "",
         expires_at: int = 0,
+        account_uid: str = "",
+        access_token: str = "",
     ) -> None:
-        """Prefer cached token; otherwise password login (may need device verification)."""
+        """Prefer cached token; otherwise mint one from the account token or password."""
+        self._email = email
+        self._password_hash = password_hash
+        if account_uid:
+            self._account_uid = account_uid
+        if access_token:
+            self._access_token = access_token
         if user_id and token and expires_at > time.time() + 60:
             self.apply_credentials(user_id, token, country, expires_at)
             return
+        if self._account_uid and self._access_token:
+            try:
+                await self._complete_login(country, self._account_uid, self._access_token)
+                return
+            except AuthError:
+                _LOGGER.debug("Stored account token rejected", exc_info=True)
         await self.login(email, password_hash, country)
 
-    async def fetch_devices(self) -> list[dict[str, Any]]:
-        r1, r2 = await asyncio.gather(
+    async def refresh_auth(self) -> None:
+        """Mint a new portal token after the cloud rejected the current one."""
+        if not self.country:
+            raise AuthError("auth denied")
+        refreshed = False
+        if self._account_uid and self._access_token:
+            try:
+                await self._complete_login(
+                    self.country, self._account_uid, self._access_token
+                )
+                refreshed = True
+            except AuthError:
+                _LOGGER.debug("Account-token refresh failed", exc_info=True)
+        if not refreshed:
+            if not self._email or not self._password_hash:
+                raise AuthError("auth denied")
+            await self.login(self._email, self._password_hash, self.country)
+        if self._on_credentials is not None:
+            self._on_credentials(self.credentials_data())
+
+    def _collect_devices(self, responses: tuple[Any, ...]) -> tuple[list[dict[str, Any]], bool]:
+        seen: dict[str, Any] = {}
+        denied = False
+        for r in responses:
+            if self._auth_denied(r):
+                denied = True
+                continue
+            if not isinstance(r, dict):
+                continue
+            for d in r.get("devices") or []:
+                if isinstance(d, dict) and d.get("did"):
+                    seen[d["did"]] = d
+        return list(seen.values()), denied
+
+    async def _request_device_lists(self) -> tuple[Any, Any]:
+        return await asyncio.gather(
             self._api("users/user.do",  {"userid": self.user_id, "todo": "GetDeviceList"}),
             self._api("appsvr/app.do",  {"userid": self.user_id, "todo": "GetGlobalDeviceList"}),
         )
-        seen: dict[str, Any] = {}
-        for r in (r1, r2):
-            for d in r.get("devices", []):
-                seen[d["did"]] = d
-        self.devices = list(seen.values())
+
+    async def fetch_devices(self) -> list[dict[str, Any]]:
+        responses = await self._request_device_lists()
+        devices, denied = self._collect_devices(responses)
+        if not devices and denied:
+            _LOGGER.warning("Device list rejected with auth denied; refreshing portal token")
+            await self.refresh_auth()
+            responses = await self._request_device_lists()
+            devices, _denied = self._collect_devices(responses)
+        self.devices = devices
         return self.devices
 
     # ── Command helper ────────────────────────────────────────────────────────
 
-    async def send_cmd(self, cmd: str, data: Any = None) -> dict[str, Any]:
+    @staticmethod
+    def _auth_denied(r: Any) -> bool:
+        """Portal OAuth rejection (errno 3), before the mower sees the command."""
+        status = r.get("ret") if isinstance(r, dict) else None
+        if status is None and isinstance(r, dict):
+            status = r.get("result")
+        return isinstance(r, dict) and status == "fail" and str(r.get("errno")) == "3"
+
+    async def _dispatch_cmd(self, cmd: str, data: Any = None) -> dict[str, Any]:
         dev = self.device
         if not dev:
             raise GoatG1Error("No device selected")
@@ -375,6 +451,36 @@ class GoatG1Api:
              "u": self.user_id, "cv": "1.67.3", "t": "a", "av": "1.3.1"},
         )
 
+    async def send_cmd(self, cmd: str, data: Any = None) -> dict[str, Any]:
+        if time.time() < self._auth_blocked_until:
+            raise AuthError(
+                "Ecovacs hat die Anmeldung abgelehnt (auth denied). "
+                "Bitte die Integration neu authentifizieren."
+            )
+        r = await self._dispatch_cmd(cmd, data)
+        if not self._auth_denied(r):
+            return r
+        async with self._auth_lock:
+            r = await self._dispatch_cmd(cmd, data)
+            if not self._auth_denied(r):
+                return r
+            _LOGGER.warning(
+                "Ecovacs rejected %s with auth denied; refreshing portal token", cmd
+            )
+            try:
+                await self.refresh_auth()
+            except AuthError:
+                self._auth_blocked_until = time.time() + 300
+                raise
+            r = await self._dispatch_cmd(cmd, data)
+        if self._auth_denied(r):
+            self._auth_blocked_until = time.time() + 300
+            raise AuthError(
+                "Ecovacs hat die Anmeldung abgelehnt (auth denied). "
+                "Bitte die Integration neu authentifizieren."
+            )
+        return r
+
     def _ok(self, r: Any) -> bool:
         return isinstance(r, dict) and r.get("ret") == "ok"
 
@@ -390,6 +496,9 @@ class GoatG1Api:
             self.send_cmd("getChargeState"),
             return_exceptions=True,
         )
+        for item in (batt_r, clean_r, charge_r):
+            if isinstance(item, AuthError):
+                raise item
         out: dict[str, Any] = {"battery": None, "state": "unknown", "available": False}
 
         if not isinstance(batt_r, Exception):

@@ -13,6 +13,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from .api import AuthError
 from .const import DOMAIN
 from .coordinator import GoatG1Coordinator
 from .entity import GoatG1Entity
@@ -77,14 +78,19 @@ class GoatG1LawnMower(GoatG1Entity, LawnMowerEntity):
         state = self.coordinator.data.get("state", "unknown")
         return _STATE_MAP.get(state)
 
-    async def async_start_mowing(self) -> None:
-        await self.coordinator.api.start_mowing()
+    async def _run(self, action) -> None:
+        try:
+            await action
+        except AuthError:
+            self.coordinator.config_entry.async_start_reauth(self.hass)
+            raise
         await self.coordinator.async_request_refresh()
+
+    async def async_start_mowing(self) -> None:
+        await self._run(self.coordinator.api.start_mowing())
 
     async def async_pause(self) -> None:
-        await self.coordinator.api.pause()
-        await self.coordinator.async_request_refresh()
+        await self._run(self.coordinator.api.pause())
 
     async def async_dock(self) -> None:
-        await self.coordinator.api.dock()
-        await self.coordinator.async_request_refresh()
+        await self._run(self.coordinator.api.dock())

@@ -5,10 +5,11 @@ import logging
 from datetime import timedelta
 from typing import Any
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .api import GoatG1Api, GoatG1Error
+from .api import AuthError, GoatG1Api, GoatG1Error
 from .const import DOMAIN, SCAN_INTERVAL
 
 _LOGGER = logging.getLogger(__name__)
@@ -17,14 +18,15 @@ _LOGGER = logging.getLogger(__name__)
 class GoatG1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Polls the Goat G1 cloud API and distributes data to all entities."""
 
-    def __init__(self, hass: HomeAssistant, api: GoatG1Api) -> None:
+    def __init__(self, hass: HomeAssistant, api: GoatG1Api, config_entry: ConfigEntry) -> None:
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
             update_interval=timedelta(seconds=SCAN_INTERVAL),
         )
-        self.api      = api
+        self.api = api
+        self.config_entry = config_entry
         self.zones:    list[dict[str, Any]] = []
         self.settings: dict[str, Any]       = {}
         self.network:  dict[str, Any]       = {}
@@ -38,6 +40,9 @@ class GoatG1Coordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         try:
             return await self.api.poll_status()
+        except AuthError as err:
+            self.config_entry.async_start_reauth(self.hass)
+            raise UpdateFailed(str(err)) from err
         except GoatG1Error as err:
             raise UpdateFailed(f"Goat G1 update failed: {err}") from err
 

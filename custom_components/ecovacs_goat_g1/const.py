@@ -8,6 +8,8 @@ CONF_DEVICE_ID = "device_id"
 CONF_USER_ID = "user_id"
 CONF_TOKEN = "token"
 CONF_EXPIRES_AT = "expires_at"
+CONF_ACCOUNT_UID = "account_uid"
+CONF_ACCESS_TOKEN = "access_token"
 
 SCAN_INTERVAL = 30  # seconds
 

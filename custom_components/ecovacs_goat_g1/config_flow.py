@@ -22,10 +22,7 @@ from .const import (
     CONF_COUNTRY,
     CONF_DEVICE_ID,
     CONF_DEVICE_INDEX,
-    CONF_EXPIRES_AT,
     CONF_PASSWORD_HASH,
-    CONF_TOKEN,
-    CONF_USER_ID,
     COUNTRIES,
     DOMAIN,
 )
@@ -226,10 +223,7 @@ class GoatG1ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             CONF_PASSWORD_HASH: self._pw_hash,
             CONF_COUNTRY: self._country,
             CONF_DEVICE_INDEX: device_index,
-            CONF_DEVICE_ID: api.device_id,
-            CONF_USER_ID: api.user_id,
-            CONF_TOKEN: api.token,
-            CONF_EXPIRES_AT: api.expires_at,
+            **api.credentials_data(),
         }
         return data
 

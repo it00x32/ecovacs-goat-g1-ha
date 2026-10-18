@@ -16,6 +16,8 @@ from .api import (
     generate_device_id,
 )
 from .const import (
+    CONF_ACCESS_TOKEN,
+    CONF_ACCOUNT_UID,
     CONF_COUNTRY,
     CONF_DEVICE_ID,
     CONF_DEVICE_INDEX,
@@ -65,6 +67,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             user_id=entry.data.get(CONF_USER_ID, ""),
             token=entry.data.get(CONF_TOKEN, ""),
             expires_at=int(entry.data.get(CONF_EXPIRES_AT) or 0),
+            account_uid=entry.data.get(CONF_ACCOUNT_UID, ""),
+            access_token=entry.data.get(CONF_ACCESS_TOKEN, ""),
         )
     except DeviceVerificationRequiredError as err:
         raise ConfigEntryAuthFailed(
@@ -74,18 +78,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except AuthError as err:
         raise ConfigEntryAuthFailed(str(err)) from err
 
+    def _persist_credentials(creds: dict) -> None:
+        hass.config_entries.async_update_entry(entry, data={**entry.data, **creds})
+
+    api.set_on_credentials(_persist_credentials)
+
     # Persist refreshed credentials / device_id without wiping other fields
-    new_data = {
-        **entry.data,
-        CONF_DEVICE_ID: api.device_id,
-        CONF_USER_ID: api.user_id,
-        CONF_TOKEN: api.token,
-        CONF_EXPIRES_AT: api.expires_at,
-    }
+    new_data = {**entry.data, **api.credentials_data()}
     if new_data != dict(entry.data):
         hass.config_entries.async_update_entry(entry, data=new_data)
 
-    await api.fetch_devices()
+    try:
+        await api.fetch_devices()
+    except DeviceVerificationRequiredError as err:
+        raise ConfigEntryAuthFailed(
+            "Ecovacs erfordert eine Geräteverifizierung per E-Mail-Code. "
+            "Bitte die Integration erneut authentifizieren."
+        ) from err
+    except AuthError as err:
+        raise ConfigEntryAuthFailed(str(err)) from err
 
     idx = entry.data.get(CONF_DEVICE_INDEX, 0)
     if not api.devices:
@@ -93,7 +104,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return False
     api.device = api.devices[min(idx, len(api.devices) - 1)]
 
-    coordinator = GoatG1Coordinator(hass, api)
+    coordinator = GoatG1Coordinator(hass, api, entry)
     await coordinator.async_config_entry_first_refresh()
     await coordinator.async_load_static_data()
 
